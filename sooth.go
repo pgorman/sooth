@@ -1,3 +1,4 @@
+// Sooth is a simple network monitor.
 package main
 
 import (
@@ -42,7 +43,7 @@ type pingResponse struct {
 }
 
 func configure() configuration {
-	c := flag.String("c", "/etc/weemon.conf", "Full path to weemon configuration file.")
+	c := flag.String("c", "/etc/sooth.conf", "Full path to Sooth configuration file.")
 	d := flag.Bool("d", false, "Turn on debuggin messages.")
 	flag.Parse()
 
@@ -74,7 +75,7 @@ func configure() configuration {
 
 	if *d {
 		conf.Debug = *d
-		fmt.Println("Starting weemon with debugging.")
+		fmt.Println("Starting Sooth with debugging.")
 		fmt.Println("Using configuration file", *c)
 		fmt.Printf("Monitoring %v targets.\n", len(conf.Targets))
 	}

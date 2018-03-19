@@ -1,8 +1,8 @@
-Weemon
+Sooth
 ========================================================================
 
-Weemon checks the availability of hosts.
-Weemon depends on the system `ping` command, and that the output of `ping` is unix-like:
+Sooth checks the availability of hosts.
+Sooth depends on the system `ping` command, and that the output of `ping` is unix-like:
 
 ```
 ping -c 3 10.0.0.2
@@ -16,7 +16,7 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.367/0.371/0.379/0.005 ms
 ```
 
-Weemon uses JSON for its configuration file, like:
+Sooth uses JSON for its configuration file, like:
 
 ```
 {
@@ -41,7 +41,7 @@ Weemon uses JSON for its configuration file, like:
 }
 ```
 
-Weemon has these command-line options:
+Sooth has these command-line options:
 
 - `-d` turns on debugging console output.
 - `-c` specifies the configuration file.
