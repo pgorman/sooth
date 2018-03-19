@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"container/ring"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,7 +13,19 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"time"
 )
+
+type pingResponse struct {
+	Time time.Time
+	Raw  []byte
+	Loss int
+	Pkts int
+	Min  float64
+	Avg  float64
+	Max  float64
+	Dev  float64
+}
 
 type target struct {
 	ID      string
@@ -28,7 +41,7 @@ type configuration struct {
 	} `json:"web"`
 	Ping struct {
 		CheckInterval  string `json:"checkInterval"`
-		HistoryLength  string `json:"historyLength"`
+		HistoryLength  int    `json:"historyLength"`
 		PacketCount    string `json:"packetCount"`
 		PacketInterval string `json:"packetInterval"`
 		LossReportRE   string `json:"lossReportRE"`
@@ -37,13 +50,8 @@ type configuration struct {
 	Targets []target `json:"targets"`
 }
 
-type pingResponse struct {
-	exitStatus string
-	raw        []byte
-}
-
 func configure() configuration {
-	c := flag.String("c", "/etc/sooth.conf", "Full path to Sooth configuration file.")
+	c := flag.String("c", "${XDG_CONFIG_HOME}/sooth.conf", "Full path to Sooth configuration file.")
 	d := flag.Bool("d", false, "Turn on debuggin messages.")
 	flag.Parse()
 
@@ -52,13 +60,13 @@ func configure() configuration {
 	conf.Web.IP = "127.0.0.1"
 	conf.Web.Port = "9444"
 	conf.Ping.CheckInterval = "60"
-	conf.Ping.HistoryLength = "100"
+	conf.Ping.HistoryLength = 100
 	conf.Ping.PacketCount = "5"
-	conf.Ping.PacketInterval = "0.3"
+	conf.Ping.PacketInterval = "1.0"
 	conf.Ping.LossReportRE = `^\d+ packets transmitted, (\d+) .+ (\d+)% packet loss.*`
 	conf.Ping.RTTReportRE = `^r.+ (\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+) ms$`
 
-	f, err := os.Open(*c)
+	f, err := os.Open(os.ExpandEnv(*c))
 	if err != nil {
 		log.Fatal("error opening config file: ", err)
 	}
@@ -88,13 +96,14 @@ func ping(t *target, conf *configuration) {
 	var r pingResponse
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
+	h := ring.New(conf.Ping.HistoryLength)
 
-	r.raw, err = exec.Command("ping", "-c", conf.Ping.PacketCount, "-i", conf.Ping.PacketInterval, t.Address).Output()
+	r.Time = time.Now()
+	r.Raw, err = exec.Command("ping", "-c", conf.Ping.PacketCount, "-i", conf.Ping.PacketInterval, t.Address).Output()
 	if err != nil && conf.Debug {
-		log.Println("ping failed:", err)
+		log.Println(t.Address, "ping failed:", err)
 	}
-	//	fmt.Println(t.Address, t.Name, t.ID)
-	sp := bytes.Split(r.raw, []byte("\n"))
+	sp := bytes.Split(r.Raw, []byte("\n"))
 	if len(sp) > 3 {
 		if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
 			loss := string(m[2])
@@ -104,21 +113,32 @@ func ping(t *target, conf *configuration) {
 			}
 		}
 		if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
-			// min := string(m[1])
-			avg, err := strconv.ParseFloat(string(m[2]), 32)
+			r.Min, err = strconv.ParseFloat(string(m[1]), 64)
 			if err != nil {
 				log.Println(err)
 			}
-			// max := string(m[3])
-			dev, err := strconv.ParseFloat(string(m[4]), 32)
+			r.Avg, err = strconv.ParseFloat(string(m[2]), 64)
 			if err != nil {
 				log.Println(err)
 			}
-			if dev > (avg * 0.3) {
+			r.Max, err = strconv.ParseFloat(string(m[3]), 64)
+			if err != nil {
+				log.Println(err)
+			}
+			r.Dev, err = strconv.ParseFloat(string(m[4]), 64)
+			if err != nil {
+				log.Println(err)
+			}
+			if err != nil {
+				log.Println(err)
+			}
+			if r.Dev > (r.Min * 2.0) {
 				fmt.Println(t.Name, string(sp[len(sp)-2]))
 			}
 		}
 	}
+	h.Value = r
+	h = h.Next()
 }
 
 func targetID(s string) string {
@@ -130,7 +150,12 @@ func main() {
 		log.Println("linux-like platform expected but not detected")
 	}
 	conf := configure()
-	for _, t := range conf.Targets {
-		ping(&t, &conf)
+	for {
+		for _, t := range conf.Targets {
+			ping(&t, &conf)
+		}
+		if conf.Debug {
+			fmt.Println("Looping...")
+		}
 	}
 }

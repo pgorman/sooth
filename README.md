@@ -27,7 +27,7 @@ Sooth uses JSON for its configuration file, like:
 	},
 	"ping": {
 		"checkInterval": "60",
-		"historyLength": "100",
+		"historyLength": 100,
 		"packetCount": "5",
 		"packetInterval": "0.3",
 		"lossReportRE": "^\\d+ packets transmitted, (\\d+) .+ (\\d+)% packet loss.*",
