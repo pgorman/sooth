@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"container/ring"
 	"encoding/json"
@@ -21,17 +22,20 @@ func init() {
 	rand.Seed(time.Now().Unix())
 }
 
+// pingResponse records the results of one ping attempt.
 type pingResponse struct {
-	Time time.Time
-	Raw  []byte
-	Loss int
-	Pkts int
-	Min  float64
-	Avg  float64
-	Max  float64
-	Dev  float64
+	Target string
+	Time   time.Time
+	Raw    []byte
+	Loss   int
+	Pkts   int
+	Min    float64
+	Avg    float64
+	Max    float64
+	Dev    float64
 }
 
+// target is a host we ping. Its address can be a hostname or IP address.
 type target struct {
 	ID      string
 	Name    string `json:"name"`
@@ -47,7 +51,7 @@ type configuration struct {
 	Ping struct {
 		CheckInterval  int    `json:"checkInterval"`
 		HistoryLength  int    `json:"historyLength"`
-		PacketCount    string `json:"packetCount"`
+		PacketCount    int    `json:"packetCount"`
 		PacketInterval string `json:"packetInterval"`
 		LossReportRE   string `json:"lossReportRE"`
 		RTTReportRE    string `json:"rttReportRE"`
@@ -55,6 +59,7 @@ type configuration struct {
 	Targets []target `json:"targets"`
 }
 
+// configure sets configuration defaults, then overrides them with values from the config file and command line arguments.
 func configure() configuration {
 	c := flag.String("c", "${XDG_CONFIG_HOME}/sooth.conf", "Full path to Sooth configuration file.")
 	d := flag.Bool("d", false, "Turn on debuggin messages.")
@@ -64,9 +69,9 @@ func configure() configuration {
 	conf.Debug = false
 	conf.Web.IP = "127.0.0.1"
 	conf.Web.Port = "9444"
-	conf.Ping.CheckInterval = 60
+	conf.Ping.CheckInterval = 50
 	conf.Ping.HistoryLength = 100
-	conf.Ping.PacketCount = "5"
+	conf.Ping.PacketCount = 10
 	conf.Ping.PacketInterval = "1.0"
 	conf.Ping.LossReportRE = `^\d+ packets transmitted, (\d+) .+ (\d+)% packet loss.*`
 	conf.Ping.RTTReportRE = `^r.+ (\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+) ms$`
@@ -82,39 +87,57 @@ func configure() configuration {
 		log.Fatal("error decodng config JSON: ", err)
 	}
 
-	for k, v := range conf.Targets {
-		conf.Targets[k].ID = targetID(v.Name)
-	}
-
 	if *d {
 		conf.Debug = *d
 		fmt.Println("Starting Sooth with debugging.")
 		fmt.Println("Using configuration file", *c)
+		fmt.Println(time.Now().Format(time.RFC1123))
 		fmt.Printf("Monitoring %v targets.\n", len(conf.Targets))
 	}
 
 	return conf
 }
 
-func ping(t target, conf *configuration, console chan string) {
+// historian brokers access to the history of pingResponses for all targests.
+func historian(conf *configuration, h chan pingResponse) {
+	hist := make(map[string]*ring.Ring, len(conf.Targets))
+	var r pingResponse
+	for {
+		r = <-h
+		if _, ok := hist[r.Target]; !ok {
+			hist[r.Target] = ring.New(conf.Ping.HistoryLength)
+		}
+		hist[r.Target].Value = r
+		hist[r.Target].Next()
+	}
+}
+
+// ping runs system pings against a target, and reports the results.
+func ping(t target, conf *configuration, console chan string, h chan pingResponse) {
 	var err error
 	var r pingResponse
+	r.Target = t.Address
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
-	h := ring.New(conf.Ping.HistoryLength)
 	for {
 		time.Sleep((time.Second * time.Duration(conf.Ping.CheckInterval)) + (time.Duration(rand.Intn(2000)) * time.Millisecond))
 		r.Time = time.Now()
-		r.Raw, err = exec.Command("ping", "-c", conf.Ping.PacketCount, "-i", conf.Ping.PacketInterval, t.Address).Output()
+		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", conf.Ping.PacketInterval, t.Address).Output()
 		if err != nil && conf.Debug {
 			log.Println(t.Address, "ping failed:", err)
 		}
 		sp := bytes.Split(r.Raw, []byte("\n"))
 		if len(sp) > 3 {
 			if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
-				loss := string(m[2])
-				pkts := string(m[1])
-				if pkts != conf.Ping.PacketCount || loss != "0" {
+				r.Loss, err = strconv.Atoi(string(m[2]))
+				if err != nil {
+					log.Println(err)
+				}
+				r.Pkts, err = strconv.Atoi(string(m[1]))
+				if err != nil {
+					log.Println(err)
+				}
+				if (conf.Ping.PacketCount - r.Pkts) > 1 {
 					console <- fmt.Sprint(t.Name, " ", string(sp[len(sp)-3]))
 				}
 			}
@@ -140,13 +163,8 @@ func ping(t target, conf *configuration, console chan string) {
 				}
 			}
 		}
-		h.Value = r
-		h = h.Next()
+		h <- r
 	}
-}
-
-func targetID(s string) string {
-	return fmt.Sprintf("%08x", s)
 }
 
 func main() {
@@ -155,9 +173,25 @@ func main() {
 	}
 	conf := configure()
 	console := make(chan string)
+	history := make(chan pingResponse)
+	go historian(&conf, history)
 	for _, t := range conf.Targets {
-		go ping(t, &conf, console)
+		go ping(t, &conf, console, history)
 	}
+	go func() {
+		var in string
+		r := bufio.NewReader(os.Stdin)
+		fmt.Printf("> ")
+		for {
+			in, _ = r.ReadString('\n')
+			switch in {
+			case "ls\n":
+				fmt.Println("list!")
+			default:
+			}
+			fmt.Printf("> ")
+		}
+	}()
 	for {
 		log.Println(<-console)
 	}
