@@ -16,6 +16,18 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.367/0.371/0.379/0.005 ms
 ```
 
+Sooth has these command-line options:
+
+- `-d` turns on debugging console output.
+- `-c` specifies the configuration file.
+
+Sooth tries to be a calm/quiet program, emitting output only to report problems.
+Tune the configuration values if Sooth's definition of "problem" doesn't match yours.
+
+
+Configuration
+------------------------------------------------------------------------
+
 Sooth uses JSON for its configuration file, like:
 
 ```
@@ -26,10 +38,10 @@ Sooth uses JSON for its configuration file, like:
 		"port": "9444"
 	},
 	"ping": {
-		"checkInterval": "60",
+		"checkInterval": 55,
+		"packetCount": 5,
+		"packetInterval": "1.0",
 		"historyLength": 100,
-		"packetCount": "5",
-		"packetInterval": "0.3",
 		"lossReportRE": "^\\d+ packets transmitted, (\\d+) .+ (\\d+)% packet loss.*",
 		"rttReportRE": "^r.+ (\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+) ms$"
 	},
@@ -41,10 +53,15 @@ Sooth uses JSON for its configuration file, like:
 }
 ```
 
-Sooth has these command-line options:
+The "ping" section of the file demands the most explanation.
+For each target/host that Sooth monitors, it starts a concurrent thread (goroutine) to ping the host with several packets, then sleep for a time.
 
-- `-d` turns on debugging console output.
-- `-c` specifies the configuration file.
+- **checkInterval** sets the time (in seconds) each thread sleeps between sending a series of ping packets. The value must be an unquoted integer Number.
+- **packetCount** sets the number of ICMP packets sent during each ping. The value must be an unquoted integer.
+- **packetInterval** sets the delay (in milliseconds) between sending each packet. On many systems, only root may set this lower than "1.0".
+- **historyLength** sets the number of check results to keep per target. The value must be an unquoted integer Number.
+- **lossReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the summary of lost packets. The default regular expression should work on at least Linux and OpenBSD.
+- **rttReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the round-trip time summary. The default regular expression should work on at least Linux and OpenBSD.
 
 
 License (2-clause BSD)
