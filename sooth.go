@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -15,6 +16,10 @@ import (
 	"strconv"
 	"time"
 )
+
+func init() {
+	rand.Seed(time.Now().Unix())
+}
 
 type pingResponse struct {
 	Time time.Time
@@ -40,7 +45,7 @@ type configuration struct {
 		Port string `json:"port"`
 	} `json:"web"`
 	Ping struct {
-		CheckInterval  string `json:"checkInterval"`
+		CheckInterval  int    `json:"checkInterval"`
 		HistoryLength  int    `json:"historyLength"`
 		PacketCount    string `json:"packetCount"`
 		PacketInterval string `json:"packetInterval"`
@@ -59,7 +64,7 @@ func configure() configuration {
 	conf.Debug = false
 	conf.Web.IP = "127.0.0.1"
 	conf.Web.Port = "9444"
-	conf.Ping.CheckInterval = "60"
+	conf.Ping.CheckInterval = 60
 	conf.Ping.HistoryLength = 100
 	conf.Ping.PacketCount = "5"
 	conf.Ping.PacketInterval = "1.0"
@@ -91,54 +96,53 @@ func configure() configuration {
 	return conf
 }
 
-func ping(t *target, conf *configuration) {
+func ping(t target, conf *configuration, console chan string) {
 	var err error
 	var r pingResponse
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
 	h := ring.New(conf.Ping.HistoryLength)
-
-	r.Time = time.Now()
-	r.Raw, err = exec.Command("ping", "-c", conf.Ping.PacketCount, "-i", conf.Ping.PacketInterval, t.Address).Output()
-	if err != nil && conf.Debug {
-		log.Println(t.Address, "ping failed:", err)
-	}
-	sp := bytes.Split(r.Raw, []byte("\n"))
-	if len(sp) > 3 {
-		if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
-			loss := string(m[2])
-			pkts := string(m[1])
-			if pkts != conf.Ping.PacketCount || loss != "0" {
-				fmt.Println(t.Name, string(sp[len(sp)-3]))
+	for {
+		time.Sleep((time.Second * time.Duration(conf.Ping.CheckInterval)) + (time.Duration(rand.Intn(2000)) * time.Millisecond))
+		r.Time = time.Now()
+		r.Raw, err = exec.Command("ping", "-c", conf.Ping.PacketCount, "-i", conf.Ping.PacketInterval, t.Address).Output()
+		if err != nil && conf.Debug {
+			log.Println(t.Address, "ping failed:", err)
+		}
+		sp := bytes.Split(r.Raw, []byte("\n"))
+		if len(sp) > 3 {
+			if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
+				loss := string(m[2])
+				pkts := string(m[1])
+				if pkts != conf.Ping.PacketCount || loss != "0" {
+					console <- fmt.Sprint(t.Name, " ", string(sp[len(sp)-3]))
+				}
+			}
+			if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
+				r.Min, err = strconv.ParseFloat(string(m[1]), 64)
+				if err != nil {
+					log.Println(err)
+				}
+				r.Avg, err = strconv.ParseFloat(string(m[2]), 64)
+				if err != nil {
+					log.Println(err)
+				}
+				r.Max, err = strconv.ParseFloat(string(m[3]), 64)
+				if err != nil {
+					log.Println(err)
+				}
+				r.Dev, err = strconv.ParseFloat(string(m[4]), 64)
+				if err != nil {
+					log.Println(err)
+				}
+				if r.Dev > (r.Min * 2.0) {
+					console <- fmt.Sprint(t.Name, " ", string(sp[len(sp)-2]))
+				}
 			}
 		}
-		if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
-			r.Min, err = strconv.ParseFloat(string(m[1]), 64)
-			if err != nil {
-				log.Println(err)
-			}
-			r.Avg, err = strconv.ParseFloat(string(m[2]), 64)
-			if err != nil {
-				log.Println(err)
-			}
-			r.Max, err = strconv.ParseFloat(string(m[3]), 64)
-			if err != nil {
-				log.Println(err)
-			}
-			r.Dev, err = strconv.ParseFloat(string(m[4]), 64)
-			if err != nil {
-				log.Println(err)
-			}
-			if err != nil {
-				log.Println(err)
-			}
-			if r.Dev > (r.Min * 2.0) {
-				fmt.Println(t.Name, string(sp[len(sp)-2]))
-			}
-		}
+		h.Value = r
+		h = h.Next()
 	}
-	h.Value = r
-	h = h.Next()
 }
 
 func targetID(s string) string {
@@ -150,12 +154,11 @@ func main() {
 		log.Println("linux-like platform expected but not detected")
 	}
 	conf := configure()
+	console := make(chan string)
+	for _, t := range conf.Targets {
+		go ping(t, &conf, console)
+	}
 	for {
-		for _, t := range conf.Targets {
-			ping(&t, &conf)
-		}
-		if conf.Debug {
-			fmt.Println("Looping...")
-		}
+		log.Println(<-console)
 	}
 }
