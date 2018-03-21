@@ -40,8 +40,10 @@ Sooth uses JSON for its configuration file, like:
 	"ping": {
 		"checkInterval": 55,
 		"packetCount": 5,
-		"packetInterval": "1.0",
+		"packetInterval": 1.0,
 		"historyLength": 100,
+		"jitterMiltiple": 2.0,
+		"packetThreshold": 1,
 		"lossReportRE": "^\\d+ packets transmitted, (\\d+) .+ (\\d+)% packet loss.*",
 		"rttReportRE": "^r.+ (\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+) ms$"
 	},
@@ -58,8 +60,10 @@ For each target/host that Sooth monitors, it starts a concurrent thread (gorouti
 
 - **checkInterval** sets the time (in seconds) each thread sleeps between sending a series of ping packets. The value must be an unquoted integer Number.
 - **packetCount** sets the number of ICMP packets sent during each ping. The value must be an unquoted integer.
-- **packetInterval** sets the delay (in milliseconds) between sending each packet. On many systems, only root may set this lower than "1.0".
+- **packetInterval** sets the delay (in milliseconds) between sending each packet. On many systems, only root may set this lower than 1.0.
 - **historyLength** sets the number of check results to keep per target. The value must be an unquoted integer Number.
+- **jitterMultiple** sets how large the round-trip time deviation must be as a multiple of the average round-trip time before Sooth prints an alert. E.g., with a jitterMultiple of 2.0, Sooth alerts on a ping response with an average RTT of 40 ms if the exceeds 80 ms.
+- **packetThreshold** sets how many packets of a ping response must be lost before Sooth prints a warning. E.g., with a packetThreshold of 1, Sooth remains silent unless more than one packet is lost.
 - **lossReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the summary of lost packets. The default regular expression should work on at least Linux and OpenBSD.
 - **rttReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the round-trip time summary. The default regular expression should work on at least Linux and OpenBSD.
 
