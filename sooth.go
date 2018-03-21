@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+var prompt = "> "
+
 func init() {
 	rand.Seed(time.Now().Unix())
 }
@@ -99,16 +101,21 @@ func configure() configuration {
 }
 
 // historian brokers access to the history of pingResponses for all targests.
-func historian(conf *configuration, h chan pingResponse) {
+func historian(conf *configuration, h chan pingResponse, report chan string) {
 	hist := make(map[string]*ring.Ring, len(conf.Targets))
 	var r pingResponse
 	for {
-		r = <-h
-		if _, ok := hist[r.Target]; !ok {
-			hist[r.Target] = ring.New(conf.Ping.HistoryLength)
+		select {
+		case r = <-h:
+			if _, ok := hist[r.Target]; !ok {
+				hist[r.Target] = ring.New(conf.Ping.HistoryLength)
+			}
+			hist[r.Target].Value = r
+			hist[r.Target].Next()
+		case <-report:
+			fmt.Println("REPORT!")
+			fmt.Printf(prompt)
 		}
-		hist[r.Target].Value = r
-		hist[r.Target].Next()
 	}
 }
 
@@ -120,7 +127,7 @@ func ping(t target, conf *configuration, console chan string, h chan pingRespons
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
 	for {
-		time.Sleep((time.Second * time.Duration(conf.Ping.CheckInterval)) + (time.Duration(rand.Intn(2000)) * time.Millisecond))
+		time.Sleep(time.Duration(rand.Intn(2000)) * time.Millisecond)
 		r.Time = time.Now()
 		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", conf.Ping.PacketInterval, t.Address).Output()
 		if err != nil && conf.Debug {
@@ -164,6 +171,7 @@ func ping(t target, conf *configuration, console chan string, h chan pingRespons
 			}
 		}
 		h <- r
+		time.Sleep(time.Second * time.Duration(conf.Ping.CheckInterval))
 	}
 }
 
@@ -174,25 +182,37 @@ func main() {
 	conf := configure()
 	console := make(chan string)
 	history := make(chan pingResponse)
-	go historian(&conf, history)
+	report := make(chan string)
+	quit := make(chan struct{})
+	go historian(&conf, history, report)
 	for _, t := range conf.Targets {
 		go ping(t, &conf, console, history)
 	}
 	go func() {
 		var in string
 		r := bufio.NewReader(os.Stdin)
-		fmt.Printf("> ")
+		fmt.Printf(prompt)
 		for {
 			in, _ = r.ReadString('\n')
 			switch in {
 			case "ls\n":
 				fmt.Println("list!")
+				fmt.Printf(prompt)
+			case "report\n":
+				report <- "foo"
+			case "quit\n":
+				quit <- struct{}{}
+				return
+			case "exit\n":
+				quit <- struct{}{}
+				return
 			default:
+				fmt.Printf(prompt)
 			}
-			fmt.Printf("> ")
 		}
 	}()
 	for {
 		log.Println(<-console)
+		fmt.Printf(prompt)
 	}
 }
