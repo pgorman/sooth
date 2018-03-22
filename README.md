@@ -18,7 +18,7 @@ rtt min/avg/max/mdev = 0.367/0.371/0.379/0.005 ms
 
 Sooth has these command-line options:
 
-- `-d` turns on debugging console output.
+- `-v` turns on verbose console output.
 - `-c` specifies the configuration file.
 
 Sooth tries to be a calm/quiet program, emitting output only to report problems.
@@ -32,7 +32,7 @@ Sooth uses JSON for its configuration file, like:
 
 ```
 {
-	"debug": false,
+	"verbose": false,
 	"web": {
 		"ip": "127.0.0.1",
 		"port": "9444"
@@ -48,9 +48,10 @@ Sooth uses JSON for its configuration file, like:
 		"rttReportRE": "^r.+ (\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+)/(\\d+\\.\\d+) ms$"
 	},
 	"targets": [
-		{ "name": "gateway", "address": "10.0.0.1" },
-		{ "name": "DNS server", "address": "10.0.0.2" },
-		{ "name": "web", "address": "10.0.0.11" }
+		"10.0.0.1",
+		"10.0.0.2",
+		"example.com",
+		"10.0.0.11"
 	]
 }
 ```
