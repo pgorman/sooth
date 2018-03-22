@@ -161,7 +161,7 @@ func historian(conf *configuration, console chan string, h chan pingResponse, re
 				fmt.Printf(prompt)
 			} else {
 				r := tally(hist[q])
-				console <- fmt.Sprintf("              ↳ %s %v/%v %v%% loss, %.0f ms avg", q, r.Pongs, r.Pings, r.Loss, r.Avg)
+				console <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.0f ms avg", q, r.Pongs, r.Pings, r.Loss, r.Avg)
 			}
 		}
 	}
