@@ -28,7 +28,8 @@ Tune the configuration values if Sooth's definition of "problem" doesn't match y
 Configuration
 ------------------------------------------------------------------------
 
-Sooth uses JSON for its configuration file, like:
+Unless `-c` flag specifies otherwise, Sooth reads its configuration from `${XDG_CONFIG_HOME}/sooth.conf` (e.g., `~/.conf/sooth.conf`)
+Sooth uses JSON for the configuration file format, like:
 
 ```
 {
@@ -67,6 +68,22 @@ For each target/host that Sooth monitors, it starts a concurrent thread (gorouti
 - **packetThreshold** sets how many packets of a ping response must be lost before Sooth prints a warning. E.g., with a packetThreshold of 1, Sooth remains silent unless more than one packet is lost.
 - **lossReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the summary of lost packets. The default regular expression should work on at least Linux and OpenBSD.
 - **rttReportRE** defines the regular expression (with backslashes escaped to keep valid JSON) used to match the output line of the system `ping` command containing the round-trip time summary. The default regular expression should work on at least Linux and OpenBSD.
+
+
+Console Interface
+------------------------------------------------------------------------
+
+Sooth prints alerts to the console.
+Or, press ENTER to see a list of summary statistics for all targets.
+
+
+Web API
+------------------------------------------------------------------------
+
+The web API provides JSON data at:
+
+- http://127.0.0.1:9444/api/v1/conf
+- http://127.0.0.1:9444/api/v1/history
 
 
 License (2-clause BSD)

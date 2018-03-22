@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -90,15 +91,15 @@ func configure() configuration {
 		log.Fatal("error decoding config JSON: ", err)
 	}
 
-	ln := 0
+	widestName := 0
 	for _, v := range conf.Targets {
 		n := len(v)
-		if ln < n {
-			ln = n
+		if widestName < n {
+			widestName = n
 		}
 	}
-	if ln < nameWidth {
-		nameWidth = ln
+	if widestName < nameWidth {
+		nameWidth = widestName
 	}
 
 	if *v {
@@ -108,7 +109,8 @@ func configure() configuration {
 		fmt.Println(time.Now().Format(time.Stamp))
 		fmt.Println("Using configuration file", *c)
 		fmt.Printf("Monitoring %v targets.\n", len(conf.Targets))
-		fmt.Printf("Press ENTER for a summary of results.\n\n")
+		fmt.Printf("Press ENTER for a summary of results.\n")
+		fmt.Printf("Serving web API at http://%s:%s/api/v1/\n\n", conf.Web.IP, conf.Web.Port)
 	}
 
 	return conf
@@ -118,7 +120,6 @@ func configure() configuration {
 func cui(report chan string) {
 	var in string
 	r := bufio.NewReader(os.Stdin)
-	fmt.Printf(prompt)
 	for {
 		in, _ = r.ReadString('\n')
 		switch in {
@@ -134,9 +135,9 @@ func cui(report chan string) {
 }
 
 // historian brokers access to the history of pingResponses for all targests.
-func historian(conf *configuration, console chan string, h chan pingResponse, report chan string) {
+func historian(conf *configuration, console chan string, h chan pingResponse, report chan string, web chan []pingResponse) {
 	hist := make(map[string]*ring.Ring, len(conf.Targets))
-	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss  %4.0f ms avg`
+	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss %8.2f ms avg, %8.2f ms mdev`
 	var r pingResponse
 	var q string
 	for {
@@ -148,21 +149,27 @@ func historian(conf *configuration, console chan string, h chan pingResponse, re
 			hist[r.Target].Value = r
 			hist[r.Target] = hist[r.Target].Next()
 		case q = <-report:
-			if q == "" {
+			switch q {
+			case "":
 				results := make([]string, 0, len(conf.Targets))
 				for _, v := range hist {
 					r := tally(v)
-					results = append(results, fmt.Sprintf(resultString, r.Target, r.Pongs, r.Pings, r.Loss, r.Avg))
+					results = append(results, fmt.Sprintf(resultString, r.Target, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev))
 				}
 				sort.Strings(results)
 				for _, v := range results {
-					fmt.Println(v)
+					console <- v
 				}
-				fmt.Printf(prompt)
-			} else {
+			default:
 				r := tally(hist[q])
-				console <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.0f ms avg", q, r.Pongs, r.Pings, r.Loss, r.Avg)
+				console <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
 			}
+		case <-web:
+			results := make([]pingResponse, 0, len(conf.Targets))
+			for _, v := range hist {
+				results = append(results, tally(v))
+			}
+			web <- results
 		}
 	}
 }
@@ -175,7 +182,8 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
 	for {
-		time.Sleep(time.Duration(rand.Intn(3000)) * time.Millisecond)
+		// Stagger the start times of the pings.
+		time.Sleep(time.Duration(rand.Intn(250*len(conf.Targets))) * time.Millisecond)
 		r.Time = time.Now()
 		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", strconv.FormatFloat(conf.Ping.PacketInterval, 'f', -1, 64), t).Output()
 		if err != nil && conf.Verbose {
@@ -183,6 +191,7 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 		}
 		sp := bytes.Split(r.Raw, []byte("\n"))
 		if len(sp) > 3 {
+			// Check latency.
 			if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
 				r.Pongs, err = strconv.Atoi(string(m[2]))
 				if err != nil {
@@ -197,6 +206,7 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 					report <- r.Target
 				}
 			}
+			// Check packet loss.
 			if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
 				r.Min, err = strconv.ParseFloat(string(m[1]), 64)
 				if err != nil {
@@ -229,40 +239,73 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 func tally(hist *ring.Ring) pingResponse {
 	var r pingResponse
 	var rtt float64
+	var min float64
+	var max float64
 	var i float64
+	d := make([]float64, 0, hist.Len())
+
 	hist.Do(func(v interface{}) {
 		if v != nil {
 			r.Target = v.(pingResponse).Target
 			r.Pings += v.(pingResponse).Pings
 			r.Pongs += v.(pingResponse).Pongs
 			rtt += v.(pingResponse).Avg
+			if v.(pingResponse).Min < min || min == 0 {
+				r.Min = v.(pingResponse).Min
+			}
+			if v.(pingResponse).Max > max {
+				r.Max = v.(pingResponse).Max
+			}
+			d = append(d, v.(pingResponse).Dev)
 			i++
 		}
 	})
+
 	r.Avg = rtt / i
 	if math.IsNaN(r.Avg) {
-		r.Avg = 0
+		r.Avg = -1
 	}
+
 	r.Loss = 100 - int(math.Round((float64(r.Pongs)/float64(r.Pings))*100.0))
-	if r.Loss < 0 {
+	if r.Loss < 0 || r.Loss > 100 {
 		r.Loss = 100
 	}
+
+	sort.Float64s(d)
+	if len(d) > 0 {
+		r.Dev = d[len(d)/2]
+	} else {
+		r.Dev = -1
+	}
+
 	return r
 }
 
 func main() {
 	if runtime.GOOS != "linux" {
-		log.Println("linux-like platform expected but not detected")
+		log.Println("Linux-like platform expected but not detected. This may or may not be a problem.")
 	}
 	conf := configure()
 	console := make(chan string)
 	history := make(chan pingResponse)
 	report := make(chan string)
-	go historian(&conf, console, history, report)
+	web := make(chan []pingResponse)
+	go historian(&conf, console, history, report, web)
 	for _, t := range conf.Targets {
 		go ping(t, &conf, console, history, report)
 	}
 	go cui(report)
+
+	http.HandleFunc("/api/v1/conf", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(conf)
+	})
+	http.HandleFunc("/api/v1/history", func(w http.ResponseWriter, r *http.Request) {
+		web <- nil
+		h := <-web
+		json.NewEncoder(w).Encode(h)
+	})
+	go http.ListenAndServe(conf.Web.IP+":"+conf.Web.Port, nil)
+
 	for {
 		fmt.Println(<-console)
 		fmt.Printf(prompt)
