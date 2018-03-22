@@ -2,27 +2,41 @@ Sooth
 ========================================================================
 
 Sooth checks the availability of hosts.
-Sooth depends on the system `ping` command, and that the output of `ping` is unix-like:
+Sooth depends on the system `ping` command, and that the output of `ping` is unix-like.
+
+Sooth provides both console output and a JSON web API.
+
+Sooth's automatic console alerting output looks like this:
 
 ```
-ping -c 3 10.0.0.2
-PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
-64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.367 ms
-64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.367 ms
-64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.379 ms
-
---- 10.0.0.2 ping statistics ---
-3 packets transmitted, 3 received, 0% packet loss, time 2049ms
-rtt min/avg/max/mdev = 0.367/0.371/0.379/0.005 ms
+Mar 22 16:50:17 gm-iad 10 packets transmitted, 8 received, 20% packet loss, time 8999ms
+                ↳ gm-iad 59/60 2% loss, 39.05 ms avg, 6.71 ms mdev
+Mar 22 16:50:23 fergus rtt min/avg/max/mdev = 0.200/1.220/9.548/2.783 ms
+                ↳ fergus 60/60 0% loss, 0.24 ms avg, 0.03 ms mdev
+Mar 22 16:50:30 kwl 10 packets transmitted, 8 received, 20% packet loss, time 8998ms
+                ↳ kwl 56/60 7% loss, 27.09 ms avg, 6.73 ms mdev
 ```
+
+Sooth's user-triggered console summary report looks like this:
+
+```
+xv-router      108/110      2% loss    51.29 ms avg,     8.20 ms mdev
+s9             109/110      1% loss    32.11 ms avg,     9.34 ms mdev
+s9-iad         109/110      1% loss    42.22 ms avg,     8.69 ms mdev
+s9-router       98/100      2% loss    48.05 ms avg,     8.64 ms mdev
+scc            110/110      0% loss    28.10 ms avg,     4.66 ms mdev
+scc-iad        108/110      2% loss    39.32 ms avg,     8.03 ms mdev
+scc-router     109/110      1% loss    48.73 ms avg,     7.08 ms mdev
+storage        110/110      0% loss     0.41 ms avg,     0.16 ms mdev
+```
+
+Sooth tries to be a calm/quiet program, emitting output only to report problems.
+Tune the configuration values if Sooth's definition of "problem" doesn't match yours.
 
 Sooth has these command-line options:
 
 - `-v` turns on verbose console output.
 - `-c` specifies the configuration file.
-
-Sooth tries to be a calm/quiet program, emitting output only to report problems.
-Tune the configuration values if Sooth's definition of "problem" doesn't match yours.
 
 
 Configuration
