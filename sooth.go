@@ -202,6 +202,9 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 					log.Println(err)
 				}
 				if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
+					if conf.Verbose {
+						console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+					}
 					console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
 					report <- r.Target
 				}
@@ -225,6 +228,9 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 					log.Println(err)
 				}
 				if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
+					if conf.Verbose {
+						console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+					}
 					console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
 					report <- r.Target
 				}
