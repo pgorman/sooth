@@ -15,13 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"time"
 )
 
-var prompt = ""
 var nameWidth = 25
 
 func init() {
@@ -117,26 +115,8 @@ func configure() configuration {
 	return conf
 }
 
-// cui provides the interactive command line interface.
-func cui(report chan string) {
-	var in string
-	r := bufio.NewReader(os.Stdin)
-	for {
-		in, _ = r.ReadString('\n')
-		switch in {
-		/*
-			case "ls\n":
-				fmt.Println("list!")
-				fmt.Printf(prompt)
-		*/
-		default:
-			report <- ""
-		}
-	}
-}
-
 // historian brokers access to the history of pingResponses for all targests.
-func historian(conf *configuration, console chan string, h chan pingResponse, report chan string, web chan []pingResponse) {
+func historian(conf *configuration, output chan string, h chan pingResponse, report chan string, web chan []pingResponse) {
 	hist := make(map[string]*ring.Ring, len(conf.Targets))
 	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss %8.2f ms avg, %8.2f ms mdev`
 	var r pingResponse
@@ -159,13 +139,13 @@ func historian(conf *configuration, console chan string, h chan pingResponse, re
 				}
 				sort.Strings(results)
 				for _, v := range results {
-					console <- v
+					output <- v
 				}
 			default:
 				r := tally(hist[q])
-				console <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
+				output <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
 				if r.Pongs < 1 && !r.LastReply.IsZero() {
-					console <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
+					output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
 				}
 			}
 		case <-web:
@@ -179,7 +159,7 @@ func historian(conf *configuration, console chan string, h chan pingResponse, re
 }
 
 // ping runs system pings against a target, and reports the results.
-func ping(t string, conf *configuration, console chan string, history chan pingResponse, report chan string) {
+func ping(t string, conf *configuration, output chan string, history chan pingResponse, report chan string) {
 	var err error
 	var r pingResponse
 	r.Target = t
@@ -229,16 +209,16 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 		history <- r
 		if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
 			if conf.Verbose {
-				console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+				output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
 			}
-			console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
+			output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
 			report <- r.Target
 		}
 		if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
 			if conf.Verbose {
-				console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+				output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
 			}
-			console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
+			output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
 			report <- r.Target
 		}
 		time.Sleep(time.Second * time.Duration(conf.Ping.CheckInterval))
@@ -296,19 +276,34 @@ func tally(hist *ring.Ring) pingResponse {
 }
 
 func main() {
-	if runtime.GOOS != "linux" {
-		log.Println("Linux-like platform expected but not detected. This may or may not be a problem.")
-	}
 	conf := configure()
-	console := make(chan string)
+	output := make(chan string)
 	history := make(chan pingResponse)
 	report := make(chan string)
 	web := make(chan []pingResponse)
-	go historian(&conf, console, history, report, web)
+	go historian(&conf, output, history, report, web)
 	for _, t := range conf.Targets {
-		go ping(t, &conf, console, history, report)
+		go ping(t, &conf, output, history, report)
 	}
-	go cui(report)
+
+	go func() {
+		for {
+			fmt.Println(<-output)
+		}
+	}()
+
+	go func() {
+		var input string
+		r := bufio.NewReader(os.Stdin)
+		for {
+			input, _ = r.ReadString('\n')
+			switch input {
+			// TODO Add other commands?
+			default:
+				report <- ""
+			}
+		}
+	}()
 
 	http.HandleFunc("/api/v1/conf", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(conf)
@@ -318,10 +313,5 @@ func main() {
 		h := <-web
 		json.NewEncoder(w).Encode(h)
 	})
-	go http.ListenAndServe(conf.Web.IP+":"+conf.Web.Port, nil)
-
-	for {
-		fmt.Println(<-console)
-		fmt.Printf(prompt)
-	}
+	log.Fatal(http.ListenAndServe(conf.Web.IP+":"+conf.Web.Port, nil))
 }

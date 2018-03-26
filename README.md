@@ -9,18 +9,20 @@ Sooth provides both console output and a JSON web API.
 Sooth's automatic console alerting output looks like this:
 
 ```
-Mar 22 16:50:17 gm-iad 10 packets transmitted, 8 received, 20% packet loss, time 8999ms
-                ↳ gm-iad 59/60 2% loss, 39.05 ms avg, 6.71 ms mdev
-Mar 22 16:50:23 fergus rtt min/avg/max/mdev = 0.200/1.220/9.548/2.783 ms
-                ↳ fergus 60/60 0% loss, 0.24 ms avg, 0.03 ms mdev
-Mar 22 16:50:30 kwl 10 packets transmitted, 8 received, 20% packet loss, time 8998ms
-                ↳ kwl 56/60 7% loss, 27.09 ms avg, 6.73 ms mdev
+Mar 26 16:48:29 fergus rtt min/avg/max/mdev = 0.212/1.147/9.278/2.710 ms
+                ↳ fergus 540/540 0% loss, 0.55 ms avg, 0.04 ms mdev
+Mar 26 16:49:32 bt 10 packets transmitted, 8 received, 20% packet loss, time 9010ms
+                ↳ bt 546/550 1% loss, 28.70 ms avg, 7.51 ms mdev
+Mar 26 16:51:58 xg-router 10 packets transmitted, 0 received, 100% packet loss, time 8998ms
+                ↳ xg-router 523/550 2% loss, 47.55 ms avg, 7.17 ms mdev
+                Last reply 3m ago.
+Mar 26 16:55:01 hr 10 packets transmitted, 8 received, 20% packet loss, time 9001ms
+                ↳ hr 564/580 3% loss, 37.73 ms avg, 5.58 ms mdev
 ```
 
 Sooth's user-triggered console summary report looks like this:
 
 ```
-xv-router      108/110      2% loss    51.29 ms avg,     8.20 ms mdev
 s9             109/110      1% loss    32.11 ms avg,     9.34 ms mdev
 s9-iad         109/110      1% loss    42.22 ms avg,     8.69 ms mdev
 s9-router       98/100      2% loss    48.05 ms avg,     8.64 ms mdev
@@ -28,6 +30,7 @@ scc            110/110      0% loss    28.10 ms avg,     4.66 ms mdev
 scc-iad        108/110      2% loss    39.32 ms avg,     8.03 ms mdev
 scc-router     109/110      1% loss    48.73 ms avg,     7.08 ms mdev
 storage        110/110      0% loss     0.41 ms avg,     0.16 ms mdev
+xv             108/110      2% loss    51.29 ms avg,     8.20 ms mdev
 ```
 
 Sooth tries to be a calm/quiet program, emitting output only to report problems.
