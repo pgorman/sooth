@@ -30,16 +30,17 @@ func init() {
 
 // pingResponse records the results of one ping attempt.
 type pingResponse struct {
-	Target string
-	Time   time.Time
-	Raw    []byte
-	Pings  int
-	Pongs  int
-	Loss   int
-	Min    float64
-	Avg    float64
-	Max    float64
-	Dev    float64
+	Target    string
+	Time      time.Time
+	LastReply time.Time
+	Raw       []byte
+	Pings     int
+	Pongs     int
+	Loss      int
+	Min       float64
+	Avg       float64
+	Max       float64
+	Dev       float64
 }
 
 type configuration struct {
@@ -163,6 +164,9 @@ func historian(conf *configuration, console chan string, h chan pingResponse, re
 			default:
 				r := tally(hist[q])
 				console <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
+				if r.Pongs < 1 && !r.LastReply.IsZero() {
+					console <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
+				}
 			}
 		case <-web:
 			results := make([]pingResponse, 0, len(conf.Targets))
@@ -201,13 +205,6 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 				if err != nil {
 					log.Println(err)
 				}
-				if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
-					if conf.Verbose {
-						console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
-					}
-					console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
-					report <- r.Target
-				}
 			}
 			// Check packet loss.
 			if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
@@ -227,16 +224,23 @@ func ping(t string, conf *configuration, console chan string, history chan pingR
 				if err != nil {
 					log.Println(err)
 				}
-				if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
-					if conf.Verbose {
-						console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
-					}
-					console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
-					report <- r.Target
-				}
 			}
 		}
 		history <- r
+		if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
+			if conf.Verbose {
+				console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+			}
+			console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
+			report <- r.Target
+		}
+		if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
+			if conf.Verbose {
+				console <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+			}
+			console <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
+			report <- r.Target
+		}
 		time.Sleep(time.Second * time.Duration(conf.Ping.CheckInterval))
 	}
 }
@@ -253,6 +257,7 @@ func tally(hist *ring.Ring) pingResponse {
 	hist.Do(func(v interface{}) {
 		if v != nil {
 			r.Target = v.(pingResponse).Target
+			r.Time = v.(pingResponse).Time
 			r.Pings += v.(pingResponse).Pings
 			r.Pongs += v.(pingResponse).Pongs
 			rtt += v.(pingResponse).Avg
@@ -261,6 +266,9 @@ func tally(hist *ring.Ring) pingResponse {
 			}
 			if v.(pingResponse).Max > max {
 				r.Max = v.(pingResponse).Max
+			}
+			if v.(pingResponse).Pongs > 0 && v.(pingResponse).Time.After(r.LastReply) {
+				r.LastReply = v.(pingResponse).Time
 			}
 			d = append(d, v.(pingResponse).Dev)
 			i++
