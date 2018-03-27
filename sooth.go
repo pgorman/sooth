@@ -21,9 +21,11 @@ import (
 )
 
 var nameWidth = 25
+var startTime time.Time
 
 func init() {
-	rand.Seed(time.Now().Unix())
+	startTime = time.Now()
+	rand.Seed(startTime.Unix())
 }
 
 // pingResponse records the results of one ping attempt.
@@ -144,8 +146,13 @@ func historian(conf *configuration, output chan string, h chan pingResponse, rep
 			default:
 				r := tally(hist[q])
 				output <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
-				if r.Pongs < 1 && !r.LastReply.IsZero() {
-					output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
+				//				if r.Pongs < 1 && !r.LastReply.IsZero() {
+				if r.Pongs < 1 {
+					if r.LastReply.IsZero() {
+						output <- fmt.Sprintf("                  Time since last reply unknown (at least %v).", time.Now().Sub(startTime).Round(time.Second))
+					} else {
+						output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
+					}
 				}
 			}
 		case <-web:
