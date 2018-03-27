@@ -41,6 +41,7 @@ type pingResponse struct {
 	Avg       float64
 	Max       float64
 	Dev       float64
+	Alert     bool
 }
 
 type configuration struct {
@@ -118,71 +119,26 @@ func configure() configuration {
 }
 
 // historian brokers access to the history of pingResponses for all targests.
-func historian(conf *configuration, output chan string, h chan pingResponse, report chan string, web chan []pingResponse) {
-	hist := make(map[string]*ring.Ring, len(conf.Targets))
-	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss %8.2f ms avg, %8.2f ms mdev`
-	var r pingResponse
-	var q string
-	for {
-		select {
-		case r = <-h:
-			if _, ok := hist[r.Target]; !ok {
-				hist[r.Target] = ring.New(conf.Ping.HistoryLength)
-			}
-			hist[r.Target].Value = r
-			hist[r.Target] = hist[r.Target].Next()
-		case q = <-report:
-			switch q {
-			case "":
-				results := make([]string, 0, len(conf.Targets))
-				for _, v := range hist {
-					r := tally(v)
-					results = append(results, fmt.Sprintf(resultString, r.Target, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev))
-				}
-				sort.Strings(results)
-				for _, v := range results {
-					output <- v
-				}
-			default:
-				r := tally(hist[q])
-				output <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", q, r.Pongs, r.Pings, r.Loss, r.Avg, r.Dev)
-				//				if r.Pongs < 1 && !r.LastReply.IsZero() {
-				if r.Pongs < 1 {
-					if r.LastReply.IsZero() {
-						output <- fmt.Sprintf("                  Time since last reply unknown (at least %v).", time.Now().Sub(startTime).Round(time.Second))
-					} else {
-						output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(r.LastReply).Round(time.Second))
-					}
-				}
-			}
-		case <-web:
-			results := make([]pingResponse, 0, len(conf.Targets))
-			for _, v := range hist {
-				results = append(results, tally(v))
-			}
-			web <- results
-		}
-	}
-}
-
-// ping runs system pings against a target, and reports the results.
-func ping(t string, conf *configuration, output chan string, history chan pingResponse, report chan string) {
+func historian(conf *configuration, output chan string, history chan pingResponse, report chan struct{}, web chan []pingResponse) {
 	var err error
 	var r pingResponse
-	r.Target = t
+	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss %8.2f ms avg, %8.2f ms mdev`
 	lr := regexp.MustCompile(conf.Ping.LossReportRE)
 	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
+	h := make(map[string]*ring.Ring, len(conf.Targets))
+
 	for {
-		// Stagger the start times of the pings.
-		time.Sleep(time.Duration(rand.Intn(250*len(conf.Targets))) * time.Millisecond)
-		r.Time = time.Now()
-		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", strconv.FormatFloat(conf.Ping.PacketInterval, 'f', -1, 64), t).Output()
-		if err != nil && conf.Verbose {
-			log.Println(t, "ping failed:", err)
-		}
-		sp := bytes.Split(r.Raw, []byte("\n"))
-		if len(sp) > 3 {
-			// Check latency.
+		select {
+		case r = <-history:
+			sp := bytes.Split(r.Raw, []byte("\n"))
+			if len(sp) < 3 {
+				if conf.Verbose {
+					log.Printf("error parsing raw ping output for %v: %v\n", r.Target, string(r.Raw))
+				}
+				continue
+			}
+
+			// Check packet loss.
 			if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
 				r.Pongs, err = strconv.Atoi(string(m[2]))
 				if err != nil {
@@ -193,7 +149,12 @@ func ping(t string, conf *configuration, output chan string, history chan pingRe
 					log.Println(err)
 				}
 			}
-			// Check packet loss.
+			if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
+				r.Alert = true
+				output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), r.Target, string(sp[len(sp)-3]))
+			}
+
+			// Check latency.
 			if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
 				r.Min, err = strconv.ParseFloat(string(m[1]), 64)
 				if err != nil {
@@ -212,22 +173,65 @@ func ping(t string, conf *configuration, output chan string, history chan pingRe
 					log.Println(err)
 				}
 			}
+			if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
+				r.Alert = true
+				output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), r.Target, string(sp[len(sp)-2]))
+			}
+
+			if _, ok := h[r.Target]; !ok {
+				h[r.Target] = ring.New(conf.Ping.HistoryLength)
+			}
+			h[r.Target].Value = r
+			h[r.Target] = h[r.Target].Next()
+
+			if r.Alert {
+				t := tally(h[r.Target])
+				if conf.Verbose {
+					output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
+				}
+				output <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", r.Target, t.Pongs, t.Pings, t.Loss, t.Avg, t.Dev)
+				if r.Pongs < 1 {
+					if t.LastReply.IsZero() {
+						output <- fmt.Sprintf("                  Time since last reply unknown (at least %v).", time.Now().Sub(startTime).Round(time.Second))
+					} else {
+						output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(t.LastReply).Round(time.Second))
+					}
+				}
+			}
+		case <-report:
+			results := make([]string, 0, len(conf.Targets))
+			for _, v := range h {
+				t := tally(v)
+				results = append(results, fmt.Sprintf(resultString, t.Target, t.Pongs, t.Pings, t.Loss, t.Avg, t.Dev))
+			}
+			sort.Strings(results)
+			for _, v := range results {
+				output <- v
+			}
+		case <-web:
+			results := make([]pingResponse, 0, len(conf.Targets))
+			for _, v := range h {
+				results = append(results, tally(v))
+			}
+			web <- results
+		}
+	}
+}
+
+// ping runs system pings against a target, and submits results to the historian.
+func ping(t string, conf *configuration, history chan pingResponse) {
+	var err error
+	var r pingResponse
+	r.Target = t
+	// Stagger the start times of the pings.
+	time.Sleep(time.Duration(rand.Intn(250*len(conf.Targets))) * time.Millisecond)
+	for {
+		r.Time = time.Now()
+		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", strconv.FormatFloat(conf.Ping.PacketInterval, 'f', -1, 64), t).Output()
+		if err != nil && conf.Verbose {
+			log.Println(t, "ping failed:", err)
 		}
 		history <- r
-		if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
-			if conf.Verbose {
-				output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
-			}
-			output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-3]))
-			report <- r.Target
-		}
-		if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
-			if conf.Verbose {
-				output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
-			}
-			output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), t, string(sp[len(sp)-2]))
-			report <- r.Target
-		}
 		time.Sleep(time.Second * time.Duration(conf.Ping.CheckInterval))
 	}
 }
@@ -286,11 +290,13 @@ func main() {
 	conf := configure()
 	output := make(chan string)
 	history := make(chan pingResponse)
-	report := make(chan string)
+	report := make(chan struct{})
 	web := make(chan []pingResponse)
+
 	go historian(&conf, output, history, report, web)
+
 	for _, t := range conf.Targets {
-		go ping(t, &conf, output, history, report)
+		go ping(t, &conf, history)
 	}
 
 	go func() {
@@ -307,7 +313,7 @@ func main() {
 			switch input {
 			// TODO Add other commands?
 			default:
-				report <- ""
+				report <- struct{}{}
 			}
 		}
 	}()
