@@ -1,0 +1,41 @@
+#!/bin/sh
+set -euf
+
+# Create troubled interfaces to test network monitoring tools.
+# Run with `sudo`.
+
+ip netns add ns-trouble
+
+ip link add veth0-trouble type veth peer name veth1-trouble
+ip link set veth1-trouble netns ns-trouble
+ip addr add 172.20.0.1/12 dev veth0-trouble
+ip link set veth0-trouble up
+
+ip link add veth2-trouble type veth peer name veth3-trouble
+ip link set veth3-trouble netns ns-trouble
+ip addr add 172.20.0.3/12 dev veth2-trouble
+ip link set veth2-trouble up
+
+ip netns exec ns-trouble ip addr add 172.20.0.2/12 dev veth1-trouble
+ip netns exec ns-trouble ip link set veth1-trouble up
+
+ip netns exec ns-trouble ip addr add 172.20.0.4/12 dev veth3-trouble
+ip netns exec ns-trouble ip link set veth3-trouble up
+
+ip netns exec ns-trouble ip route add default via 172.20.0.2
+
+ip route add 172.20.0.10 via 172.20.0.1
+ip route add 172.20.0.20 via 172.20.0.3
+
+ip netns exec ns-trouble ip link add lossy0 type dummy
+ip netns exec ns-trouble ip link set dev lossy0 up
+ip netns exec ns-trouble ip addr add 172.20.0.10/12 dev lossy0
+tc qdisc add dev veth0-trouble root netem loss 30% 25% delay 3ms 30ms
+
+ip netns exec ns-trouble ip link add latency0 type dummy
+ip netns exec ns-trouble ip link set dev latency0 up
+ip netns exec ns-trouble ip addr add 172.20.0.20/12 dev latency0
+tc qdisc add dev veth2-trouble root netem delay 10ms 500ms
+
+# To clean up, run:
+#    sudo ip netns del ns-trouble

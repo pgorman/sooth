@@ -1,330 +1,329 @@
-// Sooth is a simple network monitor.
+// Sooth monitors ICMP ping responses from a group of network hosts.
+// Copyright (C) 2020 Paul Gorman
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 package main
 
 import (
 	"bufio"
-	"bytes"
-	"container/ring"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"math/rand"
-	"net/http"
 	"os"
-	"os/exec"
-	"regexp"
-	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/sparrc/go-ping"
 )
 
-var nameWidth = 25
-var startTime time.Time
+var (
+	checkInterval    int
+	historyLength    int
+	infoFmt          string
+	jitterThreshold  int64
+	latencyThreshold int64
+	lossTolerance    int
+	nameWidth        int
+	pendFmt          string
+	pingCount        int
+	pingInterval     time.Duration
+	pingSize         int
+	pingTimeout      time.Duration
+	printMu          sync.Mutex
+	quiet            bool
+	raw              bool
+	startTime        time.Time
+	syncPings        bool
+	verbose          bool
+	warnFmt          string
+)
+
+// host holds basic info and history for a target we monitor.
+type host struct {
+	Name       string
+	LastReply  time.Time
+	LastRTTs   []time.Duration
+	Stats      []*ping.Statistics
+	StatsIndex int
+}
+
+// monitor collects a set of ping responses to from a host.
+func monitor(h *host, wg *sync.WaitGroup, l int) {
+	defer wg.Done()
+	if !syncPings {
+		// Stagger the start times of the pings.
+		// This is generally desirable, but can hide correspondences in missing responses.
+		time.Sleep(time.Duration(rand.Intn(250*l)) * time.Millisecond)
+	}
+
+	pinger, err := ping.NewPinger(h.Name)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	pinger.Count = pingCount
+	pinger.Interval = pingInterval
+	pinger.Size = pingSize
+	pinger.Timeout = pingTimeout
+	pinger.SetPrivileged(false)
+	if raw {
+		pinger.SetPrivileged(true)
+	}
+
+	for i := range h.LastRTTs {
+		h.LastRTTs[i] = 0
+	}
+
+	pinger.OnRecv = func(pkt *ping.Packet) {
+		h.LastRTTs[pkt.Seq] = pkt.Rtt
+		h.LastReply = time.Now()
+	}
+
+	pinger.OnFinish = func(stats *ping.Statistics) {
+		if h.StatsIndex >= historyLength-1 {
+			h.StatsIndex = 0
+		}
+		h.Stats[h.StatsIndex] = stats
+		h.StatsIndex++
+		warn(h, quiet)
+	}
+	pinger.Run()
+	time.Sleep(time.Second * time.Duration(checkInterval))
+}
+
+// info generates a summary of a host's history and current status.
+func info(h *host) string {
+	if h.Stats[0] == nil {
+		return fmt.Sprintf(pendFmt, h.Name)
+	}
+	var sdev int
+	var pongs int
+	var pings int
+	var rtt int
+	var l int
+
+	for _, s := range h.Stats {
+		if s == nil {
+			break
+		}
+		sdev += int(s.StdDevRtt)
+		pongs += s.PacketsRecv
+		pings += s.PacketsSent
+		rtt += int(s.AvgRtt)
+		l++
+	}
+
+	return fmt.Sprintf(infoFmt, h.Name, pongs, pings, 100-pongs*100/pings*100/100,
+		time.Duration(rtt/l).Round(time.Millisecond),
+		time.Duration(sdev/l).Round(time.Millisecond))
+}
+
+// warn prints a detailed trouble message when a host fails a test.
+func warn(h *host, quiet bool) {
+	if h.StatsIndex == 0 {
+		return
+	}
+	s := h.Stats[h.StatsIndex-1]
+	loss := false
+	jitter := false
+	var jc int
+	var lastReply string
+	woes := make([]string, 0, 3)
+	rtts := "    seq:ms"
+
+	if !h.LastReply.IsZero() {
+		lastReply = h.LastReply.Format(time.Stamp)
+	}
+
+	if s.PacketsSent-s.PacketsRecv > lossTolerance {
+		woes = append(woes, "Packet Loss")
+		loss = true
+	}
+	if s.AvgRtt.Milliseconds() > latencyThreshold {
+		woes = append(woes, "Latency")
+	}
+	for i := 0; i < pingCount; i++ {
+		ms := h.LastRTTs[i].Milliseconds()
+		if h.LastRTTs[i] == 0 {
+			rtts += fmt.Sprintf("%3d:__ ", i)
+		} else {
+			rtts += fmt.Sprintf("%3d:%-3d", i, ms)
+		}
+		if !jitter && i > 0 && ms-h.LastRTTs[i-1].Milliseconds() > jitterThreshold {
+			jc++
+			if jc > 1 {
+				woes = append(woes, "Jitter")
+				jitter = true
+			}
+		}
+	}
+	if len(woes) == 0 {
+		return
+	}
+
+	if quiet {
+		return
+	}
+
+	printMu.Lock()
+
+	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), lastReply)
+	if loss {
+		fmt.Printf("    %v%% loss (%d/%d replies received)\n",
+			s.PacketLoss, s.PacketsRecv, s.PacketsSent)
+		if s.PacketsRecv == 0 && !h.LastReply.IsZero() {
+			fmt.Printf("    Last reply %s (%v ago)\n", lastReply,
+				time.Now().Sub(h.LastReply).Round(time.Second))
+		}
+	}
+
+	if s.PacketLoss < 100 && len(woes) > 0 {
+		fmt.Printf("    RTTs %v min, %v avg, %v max, %v stddev\n",
+			s.MinRtt.Round(time.Millisecond), s.AvgRtt.Round(time.Millisecond),
+			s.MaxRtt.Round(time.Millisecond), s.StdDevRtt.Round(time.Millisecond))
+		fmt.Println(rtts)
+	}
+
+	fmt.Println("    History ", info(h)[nameWidth:])
+
+	printMu.Unlock()
+}
 
 func init() {
 	startTime = time.Now()
 	rand.Seed(startTime.Unix())
 }
 
-// pingResponse records the results of one ping attempt.
-type pingResponse struct {
-	Target    string
-	Time      time.Time
-	LastReply time.Time
-	Raw       []byte
-	Pings     int
-	Pongs     int
-	Loss      int
-	Min       float64
-	Avg       float64
-	Max       float64
-	Dev       float64
-	Alert     bool
-}
-
-type configuration struct {
-	Verbose bool `json:"verbose"`
-	Web     struct {
-		IP   string `json:"ip"`
-		Port string `json:"port"`
-	} `json:"web"`
-	Ping struct {
-		CheckInterval   int     `json:"checkInterval"`
-		HistoryLength   int     `json:"historyLength"`
-		PacketCount     int     `json:"packetCount"`
-		PacketInterval  float64 `json:"packetInterval"`
-		JitterMultiple  float64 `json:"jitterMultiple"`
-		PacketThreshold int     `json:"packetThreshold"`
-		LossReportRE    string  `json:"lossReportRE"`
-		RTTReportRE     string  `json:"rttReportRE"`
-	} `json:"ping"`
-	Targets []string `json:"targets"`
-}
-
-// configure sets configuration defaults, then overrides them with values from the config file and command line arguments.
-func configure() configuration {
-	c := flag.String("c", "${XDG_CONFIG_HOME}/sooth.conf", "Full path to Sooth configuration file.")
-	v := flag.Bool("v", false, "Turn on verbose output.")
+func main() {
+	var pi = flag.Int("i", 1, "interval between sending each ping in seconds")
+	var pt = flag.Int("W", 1, "timeout in seconds for ping replies")
+	var hostsFile string
+	flag.IntVar(&pingCount, "c", 10, "number of pings to send per round")
+	flag.IntVar(&checkInterval, "check-interval", 50, "seconds to wait between rounds of pings")
+	flag.StringVar(&hostsFile, "f", "", "path to text file listing hosts to ping, one per line")
+	flag.IntVar(&historyLength, "history-lenth", 60, "number of rounds of pings to keep")
+	flag.Int64Var(&jitterThreshold, "jitter-threshold", 50, "alet on jitter over this in ms")
+	flag.Int64Var(&latencyThreshold, "latency-threshold", 150, "alert for avg latency over this in millisenconds")
+	flag.IntVar(&lossTolerance, "loss-tolerance", 1, "number of lost packets per round to ignore without printing a warning")
+	flag.BoolVar(&quiet, "q", false, "produce output only upon the user's request")
+	flag.IntVar(&pingSize, "s", 56, "bytes of data in each packet")
+	flag.BoolVar(&syncPings, "sync", false, "syncronize the start times of the pingers")
+	flag.BoolVar(&raw, "raw", false, "use priviledged raw ICMP sockets")
+	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.Parse()
+	pingTimeout = time.Duration(*pt*pingCount) * time.Second
+	pingInterval = time.Duration(*pi) * time.Second
 
-	conf := configuration{}
-	conf.Verbose = false
-	conf.Web.IP = "127.0.0.1"
-	conf.Web.Port = "9444"
-	conf.Ping.CheckInterval = 50
-	conf.Ping.HistoryLength = 100
-	conf.Ping.PacketCount = 10
-	conf.Ping.PacketInterval = 1.0
-	conf.Ping.JitterMultiple = 2.0
-	conf.Ping.PacketThreshold = 1
-	conf.Ping.LossReportRE = `^(\d+) packets transmitted, (\d+) .+ (\d+)% packet loss.*`
-	conf.Ping.RTTReportRE = `^r.+ (\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+)/(\d+\.\d+) ms$`
-
-	f, err := os.Open(os.ExpandEnv(*c))
-	if err != nil {
-		log.Fatal("error opening config file: ", err)
-	}
-	defer f.Close()
-	decoder := json.NewDecoder(f)
-	err = decoder.Decode(&conf)
-	if err != nil {
-		log.Fatal("error decoding config JSON: ", err)
-	}
-
-	widestName := 0
-	for _, v := range conf.Targets {
-		n := len(v)
-		if widestName < n {
-			widestName = n
+	hosts := make([]host, 0, 10)
+	if hostsFile != "" {
+		f, err := os.Open(hostsFile)
+		if err != nil {
+			log.Fatal("error opening hosts file: ", err)
 		}
-	}
-	if widestName < nameWidth {
-		nameWidth = widestName
-	}
+		defer f.Close()
 
-	if *v {
-		conf.Verbose = *v
-		fmt.Println("Sooth Copyright 2018 Paul Gorman. Released under the Simplified BSD License.")
-		fmt.Println("Starting Sooth with verbose output.")
-		fmt.Println(time.Now().Format(time.Stamp))
-		fmt.Println("Using configuration file", *c)
-		fmt.Printf("Monitoring %v targets.\n", len(conf.Targets))
-		fmt.Printf("Press ENTER for a summary of results.\n")
-		fmt.Printf("Serving web API at http://%s:%s/api/v1/\n\n", conf.Web.IP, conf.Web.Port)
-	}
-
-	return conf
-}
-
-// historian brokers access to the history of pingResponses for all targests.
-func historian(conf *configuration, output chan string, history chan pingResponse, report chan struct{}, web chan []pingResponse) {
-	var err error
-	var r pingResponse
-	resultString := `%-` + strconv.Itoa(nameWidth) + `s %6v/%-6v %3v%% loss %8.2f ms avg, %8.2f ms mdev`
-	lr := regexp.MustCompile(conf.Ping.LossReportRE)
-	rr := regexp.MustCompile(conf.Ping.RTTReportRE)
-	h := make(map[string]*ring.Ring, len(conf.Targets))
-
-	for {
-		select {
-		case r = <-history:
-			sp := bytes.Split(r.Raw, []byte("\n"))
-			if len(sp) < 3 {
-				if conf.Verbose {
-					log.Printf("error parsing raw ping output for %v: %v\n", r.Target, string(r.Raw))
-				}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			var h host
+			h.Name = scanner.Text()
+			if h.Name == "" || h.Name[0] == '#' || h.Name[0:2] == "//" {
 				continue
 			}
-
-			// Check packet loss.
-			if m := lr.FindSubmatch(sp[len(sp)-3]); m != nil {
-				r.Pongs, err = strconv.Atoi(string(m[2]))
-				if err != nil {
-					log.Println(err)
-				}
-				r.Pings, err = strconv.Atoi(string(m[1]))
-				if err != nil {
-					log.Println(err)
-				}
-			}
-			if (r.Pings - r.Pongs) > conf.Ping.PacketThreshold {
-				r.Alert = true
-				output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), r.Target, string(sp[len(sp)-3]))
-			}
-
-			// Check latency.
-			if m := rr.FindSubmatch(sp[len(sp)-2]); m != nil {
-				r.Min, err = strconv.ParseFloat(string(m[1]), 64)
-				if err != nil {
-					log.Println(err)
-				}
-				r.Avg, err = strconv.ParseFloat(string(m[2]), 64)
-				if err != nil {
-					log.Println(err)
-				}
-				r.Max, err = strconv.ParseFloat(string(m[3]), 64)
-				if err != nil {
-					log.Println(err)
-				}
-				r.Dev, err = strconv.ParseFloat(string(m[4]), 64)
-				if err != nil {
-					log.Println(err)
-				}
-			}
-			if r.Dev > (r.Avg * conf.Ping.JitterMultiple) {
-				r.Alert = true
-				output <- fmt.Sprintf("%v %v %v", time.Now().Format(time.Stamp), r.Target, string(sp[len(sp)-2]))
-			}
-
-			if _, ok := h[r.Target]; !ok {
-				h[r.Target] = ring.New(conf.Ping.HistoryLength)
-			}
-			h[r.Target].Value = r
-			h[r.Target] = h[r.Target].Next()
-
-			if r.Alert {
-				t := tally(h[r.Target])
-				if conf.Verbose {
-					output <- fmt.Sprintf("\n%v\n    ↳----------↴", string(r.Raw))
-				}
-				output <- fmt.Sprintf("                ↳ %s %v/%v %v%% loss, %.2f ms avg, %.2f ms mdev", r.Target, t.Pongs, t.Pings, t.Loss, t.Avg, t.Dev)
-				if r.Pongs < 1 {
-					if t.LastReply.IsZero() {
-						output <- fmt.Sprintf("                  Time since last reply unknown (at least %v).", time.Now().Sub(startTime).Round(time.Second))
-					} else {
-						output <- fmt.Sprintf("                  Last reply %v ago.", time.Now().Sub(t.LastReply).Round(time.Second))
-					}
-				}
-			}
-		case <-report:
-			results := make([]string, 0, len(conf.Targets))
-			for _, v := range h {
-				t := tally(v)
-				results = append(results, fmt.Sprintf(resultString, t.Target, t.Pongs, t.Pings, t.Loss, t.Avg, t.Dev))
-			}
-			sort.Strings(results)
-			for _, v := range results {
-				output <- v
-			}
-		case <-web:
-			results := make([]pingResponse, 0, len(conf.Targets))
-			for _, v := range h {
-				results = append(results, tally(v))
-			}
-			web <- results
+			h.LastRTTs = make([]time.Duration, pingCount)
+			h.Stats = make([]*ping.Statistics, historyLength)
+			hosts = append(hosts, h)
+		}
+		if err := scanner.Err(); err != nil {
+			log.Fatal(err)
 		}
 	}
-}
+	for _, a := range flag.Args() {
+		var h host
+		h.Name = a
+		h.LastRTTs = make([]time.Duration, pingCount)
+		h.Stats = make([]*ping.Statistics, historyLength)
+		hosts = append(hosts, h)
+	}
 
-// ping runs system pings against a target, and submits results to the historian.
-func ping(t string, conf *configuration, history chan pingResponse) {
-	var err error
-	var r pingResponse
-	r.Target = t
-	// Stagger the start times of the pings.
-	time.Sleep(time.Duration(rand.Intn(250*len(conf.Targets))) * time.Millisecond)
-	for {
-		r.Time = time.Now()
-		r.Raw, err = exec.Command("ping", "-c", strconv.Itoa(conf.Ping.PacketCount), "-i", strconv.FormatFloat(conf.Ping.PacketInterval, 'f', -1, 64), t).Output()
-		if err != nil && conf.Verbose {
-			log.Println(t, "ping failed:", err)
+	for _, h := range hosts {
+		n := len(h.Name)
+		if nameWidth < n {
+			nameWidth = n
 		}
-		history <- r
-		time.Sleep(time.Second * time.Duration(conf.Ping.CheckInterval))
 	}
-}
+	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%-6v %3v%% loss %6v avg rtt %6v mdev"
+	pendFmt = "%-" + strconv.Itoa(nameWidth) + "s results pending..."
+	warnFmt = "%-" + strconv.Itoa(nameWidth) + "s  %-30s  %v\n"
 
-// tally summarizes ping responses.
-func tally(hist *ring.Ring) pingResponse {
-	var r pingResponse
-	var rtt float64
-	var min float64
-	var max float64
-	var i float64
-	d := make([]float64, 0, hist.Len())
-
-	hist.Do(func(v interface{}) {
-		if v != nil {
-			r.Target = v.(pingResponse).Target
-			r.Time = v.(pingResponse).Time
-			r.Pings += v.(pingResponse).Pings
-			r.Pongs += v.(pingResponse).Pongs
-			rtt += v.(pingResponse).Avg
-			if v.(pingResponse).Min < min || min == 0 {
-				r.Min = v.(pingResponse).Min
-			}
-			if v.(pingResponse).Max > max {
-				r.Max = v.(pingResponse).Max
-			}
-			if v.(pingResponse).Pongs > 0 && v.(pingResponse).Time.After(r.LastReply) {
-				r.LastReply = v.(pingResponse).Time
-			}
-			d = append(d, v.(pingResponse).Dev)
-			i++
-		}
-	})
-
-	r.Avg = rtt / i
-	if math.IsNaN(r.Avg) {
-		r.Avg = -1
+	if verbose && !quiet {
+		fmt.Println("Sooth Copyright 2018 Paul Gorman. Released under the GPLv3 License.")
+		fmt.Println("Starting Sooth with verbose output.")
+		fmt.Println(time.Now().Format(time.Stamp))
+		fmt.Println("Using hosts file", hostsFile)
+		fmt.Printf("Monitoring %v target(s).\n", len(hosts))
+		fmt.Printf("Enter ? for help.\n")
 	}
-
-	r.Loss = 100 - int(math.Round((float64(r.Pongs)/float64(r.Pings))*100.0))
-	if r.Loss < 0 || r.Loss > 100 {
-		r.Loss = 100
-	}
-
-	sort.Float64s(d)
-	if len(d) > 0 {
-		r.Dev = d[len(d)/2]
-	} else {
-		r.Dev = -1
-	}
-
-	return r
-}
-
-func main() {
-	conf := configure()
-	output := make(chan string)
-	history := make(chan pingResponse)
-	report := make(chan struct{})
-	web := make(chan []pingResponse)
-
-	go historian(&conf, output, history, report, web)
-
-	for _, t := range conf.Targets {
-		go ping(t, &conf, history)
-	}
-
-	go func() {
-		for {
-			fmt.Println(<-output)
-		}
-	}()
 
 	go func() {
 		var input string
 		r := bufio.NewReader(os.Stdin)
 		for {
 			input, _ = r.ReadString('\n')
-			switch input {
-			// TODO Add other commands?
+			switch strings.TrimSpace(input) {
+			case "?":
+				printMu.Lock()
+				fmt.Println(`
+Sooth is silent unless it either detects a problem with a host
+or the user enters one of these:
+
+  ?      Print this help.
+  ENTER  Report on recently troubled hosts.
+  a      Report on all hosts.
+  q      Quit Sooth.
+
+Run Sooth like 'sooth --help' for a list of command-line flags.
+See also https://github.com/pgorman/sooth.
+			`)
+				printMu.Unlock()
+			case "a":
+				printMu.Lock()
+				for _, h := range hosts {
+					fmt.Println(info(&h))
+				}
+				printMu.Unlock()
+			case "q":
+				os.Exit(0)
 			default:
-				report <- struct{}{}
+				for _, h := range hosts {
+					warn(&h, false)
+				}
+				fmt.Println()
 			}
 		}
 	}()
 
-	http.HandleFunc("/api/v1/conf", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(conf)
-	})
-	http.HandleFunc("/api/v1/history", func(w http.ResponseWriter, r *http.Request) {
-		web <- nil
-		h := <-web
-		json.NewEncoder(w).Encode(h)
-	})
-	log.Fatal(http.ListenAndServe(conf.Web.IP+":"+conf.Web.Port, nil))
+	for {
+		var wg sync.WaitGroup
+		for i := range hosts {
+			wg.Add(1)
+			go monitor(&hosts[i], &wg, len(hosts))
+		}
+		wg.Wait()
+	}
+
 }
