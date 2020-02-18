@@ -39,6 +39,7 @@ var (
 	latencyThreshold int64
 	lossTolerance    int
 	nameWidth        int
+	newLine          string
 	pendFmt          string
 	pingCount        int
 	pingInterval     time.Duration
@@ -51,6 +52,7 @@ var (
 	syncPings        bool
 	verbose          bool
 	warnFmt          string
+	wide             bool
 )
 
 // host holds basic info and history for a target we monitor.
@@ -200,23 +202,27 @@ func warn(h *host, quiet bool) {
 		lastReply = time.Now().Format(time.Stamp)
 	}
 
-	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), time.Now().Format(time.Stamp))
-	if loss {
-		fmt.Printf("    %v%% loss    (%d/%d replies received)\n",
-			s.PacketLoss, s.PacketsRecv, s.PacketsSent)
+	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), time.Now().Format(time.Stamp), newLine)
+	if loss || wide {
+		fmt.Printf("    Loss %3v%%  %3d/%-3d%s",
+			s.PacketLoss, s.PacketsRecv, s.PacketsSent, newLine)
 		if s.PacketsRecv == 0 && !h.LastReply.IsZero() {
-			fmt.Printf("    Last reply %s (%v ago)\n", lastReply,
-				time.Now().Sub(h.LastReply).Round(time.Second))
+			fmt.Printf("    Last reply %s (%v ago)%s", lastReply,
+				time.Now().Sub(h.LastReply).Round(time.Second), newLine)
 		}
 	}
 
 	if s.PacketLoss < 100 && len(woes) > 0 {
-		fmt.Printf("    RTT    min %d ms    avg %d ms    max %d ms    stddev %d ms\n",
+		fmt.Printf("    RTT (ms)  min %-4d    avg %-4d    max %-4d    stddev %-4d%s",
 			minms(s.MinRtt),
 			minms(s.AvgRtt),
 			minms(s.MaxRtt),
-			minms(s.StdDevRtt))
-		fmt.Println(rtts)
+			minms(s.StdDevRtt),
+			newLine)
+		fmt.Printf(rtts)
+		if !wide {
+			fmt.Println()
+		}
 	}
 
 	fmt.Println("    Since",
@@ -246,6 +252,7 @@ func main() {
 	flag.IntVar(&pingSize, "s", 56, "bytes of data in each packet")
 	flag.BoolVar(&syncPings, "sync", false, "syncronize the start times of the pingers")
 	flag.BoolVar(&raw, "raw", false, "use priviledged raw ICMP sockets")
+	flag.BoolVar(&wide, "w", false, "wide output")
 	flag.BoolVar(&verbose, "v", false, "verbose output")
 	flag.Parse()
 	pingTimeout = time.Duration(*pt*pingCount) * time.Second
@@ -282,6 +289,10 @@ func main() {
 		hosts = append(hosts, h)
 	}
 
+	if !wide {
+		newLine = "\n"
+	}
+
 	for _, h := range hosts {
 		n := len(h.Name)
 		if nameWidth < n {
@@ -290,7 +301,7 @@ func main() {
 	}
 	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%v pkts %4v%% loss %6dms avg rtt %6dms mdev"
 	pendFmt = "%-" + strconv.Itoa(nameWidth) + "s results pending..."
-	warnFmt = "%-" + strconv.Itoa(nameWidth) + "s  %-30s  %v\n"
+	warnFmt = "%-" + strconv.Itoa(nameWidth) + "s  %-30s  %v%s"
 
 	if verbose && !quiet {
 		fmt.Println("Sooth Copyright 2018 Paul Gorman. Released under the GPLv3 License.")
