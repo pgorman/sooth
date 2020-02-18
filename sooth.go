@@ -176,7 +176,7 @@ func warn(h *host, quiet bool) {
 		} else {
 			rtts += fmt.Sprintf("%3d=%-3d", i, ms)
 		}
-		if !jitter && i > 0 && ms-minms(h.LastRTTs[i-1]) > jitterThreshold {
+		if !jitter && i > 0 && minms(h.LastRTTs[i-1])-ms > jitterThreshold && minms(h.LastRTTs[i-1]) > ms*2 {
 			jc++
 			if jc > 1 {
 				woes = append(woes, "Jitter")
