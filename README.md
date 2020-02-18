@@ -5,12 +5,14 @@ Sooth is a simple network monitoring tool that tracks how a collection of hosts 
 
 Sooth is quiet by default, until it detects trouble.
 
+In interactive mode, enter `?` for help.
+
 To show a summary for all hosts, enter `a`.
 
 ```
 a
 172.20.0.10               9/20      55% loss    9ms avg rtt   12ms mdev
-www.example.net           0/20     100% loss     0s avg rtt     0s mdev
+www.example.net           0/20     100% loss    0ms avg rtt    0ms mdev
 google.com               20/20       0% loss   18ms avg rtt    3ms mdev
 172.20.0.20              20/20       0% loss  118ms avg rtt  147ms mdev
 …
@@ -20,18 +22,19 @@ To show the latest problems, press ENTER.
 
 ```
 
-172.20.0.10           Packet Loss                     Feb 17 14:31:29
-    30% loss (7/10 replies received)
-    RTTs 0s min, 3ms avg, 14ms max, 5ms stddev
-    seq:ms  0:0    1:__   2:__   3:0    4:__   5:0    6:0    7:2    8:13   9:1  
-    History       29/50      42% loss    7ms avg rtt    8ms mdev
-www.example.net  Packet Loss                     
-    100% loss (0/10 replies received)
-    History        0/50     100% loss     0s avg rtt     0s mdev
-172.20.0.20           Latency, Jitter                 Feb 17 14:31:29
-    RTTs 0s min, 166ms avg, 424ms max, 182ms stddev
-    seq:ms  0:0    1:0    2:133  3:421  4:423  5:5    6:386  7:0    8:284  9:0  
-    History       50/50       0% loss  134ms avg rtt  151ms mdev
+172.20.0.20           Jitter                          Feb 17 22:09:09
+    RTT    min 1 ms    avg 96 ms    max 349 ms    stddev 134 ms
+    seq (ms)   0=1    1=87   2=1    3=1    4=1    5=349  6=1    7=307  8=224  9=1  
+    Since Feb 17 22:05:55     100/100 pkts    0% loss    112ms avg rtt    147ms mdev
+www.example.net       Packet Loss                     Feb 17 22:09:10
+    100% loss    (0/10 replies received)
+    Since Feb 17 22:05:55       0/100 pkts  100% loss      0ms avg rtt      0ms mdev
+172.20.0.10           Packet Loss                     Feb 17 22:09:08
+    30% loss    (7/10 replies received)
+    RTT    min 1 ms    avg 10 ms    max 20 ms    stddev 7 ms
+    seq (ms)   0=__   1=__   2=1    3=9    4=11   5=14   6=1    7=14   8=20   9=__ 
+    Since Feb 17 22:05:55      74/100 pkts   26% loss      9ms avg rtt      9ms mdev
+
 ```
 
 The list of hosts to monitor can be specified as command line arguments or in a file specified with the `-f` flag.
@@ -39,9 +42,11 @@ In the file, list one IP address or host name per line:
 
 ```
 10.0.0.1
+# A comment.
 ns1.example.com
 192.168.10.100
 www.example.net
+mail.example.com
 ```
 
 For list of command line options:
