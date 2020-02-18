@@ -200,7 +200,7 @@ func warn(h *host, quiet bool) {
 		lastReply = time.Now().Format(time.Stamp)
 	}
 
-	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), lastReply)
+	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), time.Now().Format(time.Stamp))
 	if loss {
 		fmt.Printf("    %v%% loss    (%d/%d replies received)\n",
 			s.PacketLoss, s.PacketsRecv, s.PacketsSent)
