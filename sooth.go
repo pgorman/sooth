@@ -129,8 +129,9 @@ func info(h *host) string {
 	}
 
 	return fmt.Sprintf(infoFmt, h.Name, pongs, pings, 100-pongs*100/pings*100/100,
-		time.Duration(rtt/l).Round(time.Millisecond),
-		time.Duration(sdev/l).Round(time.Millisecond))
+		//ms := (h.LastRTTs[i] + time.Millisecond).Milliseconds()
+		(time.Duration(rtt/l) + time.Millisecond).Milliseconds(),
+		(time.Duration(sdev/l) + time.Millisecond).Milliseconds())
 }
 
 // warn prints a detailed trouble message when a host fails a test.
@@ -158,7 +159,7 @@ func warn(h *host, quiet bool) {
 		woes = append(woes, "Latency")
 	}
 	for i := 0; i < pingCount; i++ {
-		ms := h.LastRTTs[i].Milliseconds()
+		ms := (h.LastRTTs[i] + time.Millisecond).Milliseconds()
 		if h.LastRTTs[i] == 0 {
 			rtts += fmt.Sprintf("%3d:__ ", i)
 		} else {
@@ -266,7 +267,7 @@ func main() {
 			nameWidth = n
 		}
 	}
-	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%-6v %3v%% loss %6v avg rtt %6v mdev"
+	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%-6v %3v%% loss %6dms avg rtt %6dms mdev"
 	pendFmt = "%-" + strconv.Itoa(nameWidth) + "s results pending..."
 	warnFmt = "%-" + strconv.Itoa(nameWidth) + "s  %-30s  %v\n"
 
@@ -305,6 +306,7 @@ See also https://github.com/pgorman/sooth.
 				for _, h := range hosts {
 					fmt.Println(info(&h))
 				}
+				fmt.Println()
 				printMu.Unlock()
 			case "q":
 				os.Exit(0)
