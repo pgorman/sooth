@@ -58,13 +58,56 @@ type host struct {
 	Name       string
 	LastReply  time.Time
 	LastRTTs   []time.Duration
+	Since      time.Time
 	Stats      []*ping.Statistics
 	StatsIndex int
+}
+
+// info generates a summary of a host's history and current status.
+func info(h *host) string {
+	if h.Stats[0] == nil {
+		return fmt.Sprintf(pendFmt, h.Name)
+	}
+	var sdev int
+	var pongs int
+	var pings int
+	var rtt int
+	var l int
+
+	for _, s := range h.Stats {
+		if s == nil {
+			break
+		}
+		sdev += int(s.StdDevRtt)
+		pongs += s.PacketsRecv
+		pings += s.PacketsSent
+		rtt += int(s.AvgRtt)
+		l++
+	}
+
+	return fmt.Sprintf(infoFmt, h.Name, pongs, pings, 100-pongs*100/pings*100/100,
+		minms(time.Duration(rtt/l)), minms(time.Duration(sdev/l)))
+}
+
+// minms rounds up a time.Duration to 1 unless it's <= 0.
+func minms(d time.Duration) int64 {
+	if d == 0 {
+		return 0
+	}
+
+	ms := d.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	return ms
 }
 
 // monitor collects a set of ping responses to from a host.
 func monitor(h *host, wg *sync.WaitGroup, l int) {
 	defer wg.Done()
+	if h.StatsIndex == 0 {
+		h.Since = time.Now()
+	}
 	if !syncPings {
 		// Stagger the start times of the pings.
 		// This is generally desirable, but can hide correspondences in missing responses.
@@ -106,34 +149,6 @@ func monitor(h *host, wg *sync.WaitGroup, l int) {
 	time.Sleep(time.Second * time.Duration(checkInterval))
 }
 
-// info generates a summary of a host's history and current status.
-func info(h *host) string {
-	if h.Stats[0] == nil {
-		return fmt.Sprintf(pendFmt, h.Name)
-	}
-	var sdev int
-	var pongs int
-	var pings int
-	var rtt int
-	var l int
-
-	for _, s := range h.Stats {
-		if s == nil {
-			break
-		}
-		sdev += int(s.StdDevRtt)
-		pongs += s.PacketsRecv
-		pings += s.PacketsSent
-		rtt += int(s.AvgRtt)
-		l++
-	}
-
-	return fmt.Sprintf(infoFmt, h.Name, pongs, pings, 100-pongs*100/pings*100/100,
-		//ms := (h.LastRTTs[i] + time.Millisecond).Milliseconds()
-		(time.Duration(rtt/l) + time.Millisecond).Milliseconds(),
-		(time.Duration(sdev/l) + time.Millisecond).Milliseconds())
-}
-
 // warn prints a detailed trouble message when a host fails a test.
 func warn(h *host, quiet bool) {
 	if h.StatsIndex == 0 {
@@ -145,11 +160,7 @@ func warn(h *host, quiet bool) {
 	var jc int
 	var lastReply string
 	woes := make([]string, 0, 3)
-	rtts := "    seq:ms"
-
-	if !h.LastReply.IsZero() {
-		lastReply = h.LastReply.Format(time.Stamp)
-	}
+	rtts := "    seq (ms) "
 
 	if s.PacketsSent-s.PacketsRecv > lossTolerance {
 		woes = append(woes, "Packet Loss")
@@ -159,13 +170,13 @@ func warn(h *host, quiet bool) {
 		woes = append(woes, "Latency")
 	}
 	for i := 0; i < pingCount; i++ {
-		ms := (h.LastRTTs[i] + time.Millisecond).Milliseconds()
+		ms := minms(h.LastRTTs[i])
 		if h.LastRTTs[i] == 0 {
-			rtts += fmt.Sprintf("%3d:__ ", i)
+			rtts += fmt.Sprintf("%3d=__ ", i)
 		} else {
-			rtts += fmt.Sprintf("%3d:%-3d", i, ms)
+			rtts += fmt.Sprintf("%3d=%-3d", i, ms)
 		}
-		if !jitter && i > 0 && ms-h.LastRTTs[i-1].Milliseconds() > jitterThreshold {
+		if !jitter && i > 0 && ms-minms(h.LastRTTs[i-1]) > jitterThreshold {
 			jc++
 			if jc > 1 {
 				woes = append(woes, "Jitter")
@@ -183,9 +194,15 @@ func warn(h *host, quiet bool) {
 
 	printMu.Lock()
 
+	if !h.LastReply.IsZero() {
+		lastReply = h.LastReply.Format(time.Stamp)
+	} else {
+		lastReply = time.Now().Format(time.Stamp)
+	}
+
 	fmt.Printf(warnFmt, h.Name, strings.Join(woes, ", "), lastReply)
 	if loss {
-		fmt.Printf("    %v%% loss (%d/%d replies received)\n",
+		fmt.Printf("    %v%% loss    (%d/%d replies received)\n",
 			s.PacketLoss, s.PacketsRecv, s.PacketsSent)
 		if s.PacketsRecv == 0 && !h.LastReply.IsZero() {
 			fmt.Printf("    Last reply %s (%v ago)\n", lastReply,
@@ -194,13 +211,17 @@ func warn(h *host, quiet bool) {
 	}
 
 	if s.PacketLoss < 100 && len(woes) > 0 {
-		fmt.Printf("    RTTs %v min, %v avg, %v max, %v stddev\n",
-			s.MinRtt.Round(time.Millisecond), s.AvgRtt.Round(time.Millisecond),
-			s.MaxRtt.Round(time.Millisecond), s.StdDevRtt.Round(time.Millisecond))
+		fmt.Printf("    RTT    min %d ms    avg %d ms    max %d ms    stddev %d ms\n",
+			minms(s.MinRtt),
+			minms(s.AvgRtt),
+			minms(s.MaxRtt),
+			minms(s.StdDevRtt))
 		fmt.Println(rtts)
 	}
 
-	fmt.Println("    History ", info(h)[nameWidth:])
+	fmt.Println("    Since",
+		h.Since.Format(time.Stamp),
+		info(h)[nameWidth:])
 
 	printMu.Unlock()
 }
@@ -267,7 +288,7 @@ func main() {
 			nameWidth = n
 		}
 	}
-	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%-6v %3v%% loss %6dms avg rtt %6dms mdev"
+	infoFmt = "%-" + strconv.Itoa(nameWidth) + "s %6v/%v pkts %4v%% loss %6dms avg rtt %6dms mdev"
 	pendFmt = "%-" + strconv.Itoa(nameWidth) + "s results pending..."
 	warnFmt = "%-" + strconv.Itoa(nameWidth) + "s  %-30s  %v\n"
 
