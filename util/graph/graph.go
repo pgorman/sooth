@@ -1,3 +1,4 @@
+// graph prints an ASCII graph of problems per hour in a Sooth log.
 package main
 
 import (
@@ -6,43 +7,44 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"sort"
+	"strconv"
 )
 
 func main() {
-	reHour := regexp.MustCompile(`(?i)^(?:[a-z0-9\-\.]+)\s+(Packet Loss|Latency|Jitter)+,*\s+[a-z]{3}\s+\d\d\s+(\d\d):.+`)
+	reHour := regexp.MustCompile(`(?i)^(?:[a-z0-9\-\.]+)\s+(?:Packet Loss|Latency|Jitter)+,*\s+[a-z]{3}\s+\d\d\s+(\d\d):.+`)
 	countsByHour := make(map[string]int)
 
 	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() { // Scan() return false when it hits EOF or an error.
+	for scanner.Scan() {
 		line := scanner.Text()
 		matches := reHour.FindStringSubmatch(line)
 		if matches == nil {
 			continue
 		}
-		//fmt.Println(matches[1], matches[2])
-		countsByHour[matches[2]]++
+		countsByHour[matches[1]]++
 	}
-	if err := scanner.Err(); err != nil { // Scan() returns nil if the error was io.EOF.
+	if err := scanner.Err(); err != nil {
 		log.Fatal(err)
 	}
 
-	keys := make([]string, 0, len(countsByHour))
-	maxProblems := 0
-	for k, v := range countsByHour {
-		keys = append(keys, k)
+	var maxProblems int
+	for _, v := range countsByHour {
 		if v > maxProblems {
 			maxProblems = v
 		}
 	}
-	sort.Strings(keys)
 
-	for _, v := range keys {
-		p := int((float64(countsByHour[v]) / float64(maxProblems)) * 100.0)
-		fmt.Printf("%s ", v)
-		for i := 0; i < p; i++ {
-			fmt.Printf("*")
+	for i := 0; i < 24; i++ {
+		k := strconv.Itoa(i)
+		if _, ok := countsByHour[k]; ok {
+			p := int((float64(countsByHour[k]) / float64(maxProblems)) * 100.0)
+			fmt.Printf("%2s %6d ", k, countsByHour[k])
+			for i := 0; i < p; i++ {
+				fmt.Printf("*")
+			}
+			fmt.Println()
+		} else {
+			fmt.Printf("%2d %6d\n", i, 0)
 		}
-		fmt.Println()
 	}
 }
