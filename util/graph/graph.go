@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,9 @@ import (
 )
 
 func main() {
+	var maxProblems int
+	flag.IntVar(&maxProblems, "x", 0, "set graph upper bound for problems per hour")
+	flag.Parse()
 	reHour := regexp.MustCompile(`(?i)^(?:[a-z0-9\-\.]+)\s+(?:Packet Loss|Latency|Jitter)+,*\s+[a-z]{3}\s+\d\d\s+(\d\d):.+`)
 	countsByHour := make(map[string]int)
 
@@ -27,10 +31,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var maxProblems int
-	for _, v := range countsByHour {
-		if v > maxProblems {
-			maxProblems = v
+	if maxProblems == 0 {
+		for _, v := range countsByHour {
+			if v > maxProblems {
+				maxProblems = v
+			}
 		}
 	}
 
