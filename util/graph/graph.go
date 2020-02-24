@@ -40,7 +40,12 @@ func main() {
 	}
 
 	for i := 0; i < 24; i++ {
-		k := strconv.Itoa(i)
+		var k string
+		if i >= 10 {
+			k = strconv.Itoa(i)
+		} else {
+			k = "0" + strconv.Itoa(i)
+		}
 		if _, ok := countsByHour[k]; ok {
 			p := int((float64(countsByHour[k]) / float64(maxProblems)) * 100.0)
 			fmt.Printf("%2s %6d ", k, countsByHour[k])
