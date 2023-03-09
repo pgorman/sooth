@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sparrc/go-ping"
+	"github.com/go-ping/ping"
 )
 
 var (
